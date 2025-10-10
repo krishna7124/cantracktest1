@@ -30,7 +30,7 @@ MODELS_CONFIG = {
     "Breast Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_breast.weights.h5",
-        "file_id": "1io_mPLfYkew3buJQ7pld1hDhhlYY5zTy", # <-- Replace with your file ID
+        "file_id": "1yFYAotWScH7utmt-4U-KYY3uP6lmgfY3", # <-- Replace with your file ID
         "class_labels": ['breast_benign', 'breast_malignant'],
         "image_size": (380, 380)
     },
