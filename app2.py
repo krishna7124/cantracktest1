@@ -23,7 +23,7 @@ MODELS_CONFIG = {
     "Brain Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_brain.weights.h5",
-        "file_id": "1XLAa01FEH2lE4J2n4XKDD8ZnbygXVHG_", # <-- Replace with your file ID
+        "file_id": "1dkuKptJnse_FSM9zsJrpTRVNYjMmKscV", # <-- Replace with your file ID
         "class_labels": ['brain_glioma', 'brain_menin', 'brain_tumor'],
         "image_size": (380, 380)
     },
