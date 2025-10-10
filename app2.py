@@ -3,23 +3,24 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 import os
-import gdown
 
 # ======================
 # CONFIG
 # ======================
 WEIGHTS_FILE = "efficientnetb5.weights.h5"
-WEIGHTS_URL = "https://drive.google.com/file/d/1wYoROoBNIbhtMiMAcJoZw7axolEJshBU/view?usp=drive_link"  # Replace with your ID
+WEIGHTS_URL = "https://drive.google.com/file/d/1wYoROoBNIbhtMiMAcJoZw7axolEJshBU/view?usp=drive_link"  # Replace with your file ID
 CLASS_LABELS = ["all_benign", "all_early", "all_pre", "all_pro"]
 IMAGE_SIZE = (456, 456)
 
 # ======================
-# DOWNLOAD MODEL IF NOT PRESENT
+# DOWNLOAD MODEL IF NOT PRESENT (SAFE)
 # ======================
-if not os.path.exists(WEIGHTS_FILE):
-    with st.spinner("Downloading model weights..."):
-        gdown.download(WEIGHTS_URL, WEIGHTS_FILE, quiet=False)
-    st.success("Weights downloaded successfully!")
+weights_path = tf.keras.utils.get_file(
+    WEIGHTS_FILE,
+    WEIGHTS_URL,
+    cache_subdir="models",
+    extract=False
+)
 
 # ======================
 # BUILD MODEL ARCHITECTURE
@@ -40,7 +41,8 @@ def load_model():
     outputs = tf.keras.layers.Dense(len(CLASS_LABELS), activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
 
-    model.load_weights(WEIGHTS_FILE)
+    # Load weights from the safe cached path
+    model.load_weights(weights_path)
     return model
 
 model = load_model()
