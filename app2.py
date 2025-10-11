@@ -39,11 +39,10 @@ MODELS_CONFIG = {
         "class_labels": ['cervix_dyk', 'cervix_koc', 'cervix_mep', 'cervix_pab', 'cervix_sfi'],
         "image_size": (380, 380)
     },
-    # --- NEW: Kidney Cancer Model Added ---
     "Kidney Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_kidney.weights.h5",
-        "file_id": "1uZw8-Y0YnP07gqJTU2o-ftH9rEXWEu6G", # Replace with your actual Google Drive file ID
+        "file_id": "1uZw8-Y0YnP07gqJTU2o-ftH9rEXWEu6G",
         "class_labels": ['kidney_normal', 'kidney_tumor'],
         "image_size": (380, 380)
     }
@@ -56,34 +55,28 @@ CONFIDENCE_THRESHOLD = 50.0
 st.set_page_config(layout="wide")
 st.title("🔬 Multi-Cancer Type Image Classifier")
 
-# --- Auto-download all models on startup ---
 @st.cache_resource(show_spinner="Performing initial setup: Downloading all model weights...")
 def download_all_models():
     """
     Iterates through the model config and downloads any missing weights files.
-    This function is cached and runs only once per session.
     """
     for model_name, config in MODELS_CONFIG.items():
         weights_file = config["weights_file"]
         if not os.path.exists(weights_file):
-            print(f"Downloading weights for: {model_name}") # Log for debugging
+            print(f"Downloading weights for: {model_name}")
             try:
                 gdown.download(id=config["file_id"], output=weights_file, quiet=False)
             except Exception as e:
                 st.error(f"Could not download weights for {model_name}. File ID may be incorrect. Error: {e}")
 
-
-# Run the download function on app start.
 download_all_models()
 
-# --- Sidebar for Model Selection ---
 st.sidebar.title("⚙️ Controls")
 selected_model_name = st.sidebar.radio(
     "Choose the classification model:",
     list(MODELS_CONFIG.keys())
 )
 
-# Get configuration for the selected model
 config = MODELS_CONFIG[selected_model_name]
 CLASS_LABELS = config["class_labels"]
 IMAGE_SIZE = config["image_size"]
@@ -94,7 +87,7 @@ IMAGE_SIZE = config["image_size"]
 
 @st.cache_resource(show_spinner="Loading classification model...")
 def load_model(model_name):
-    """Loads a model into memory. Cached to prevent reloading when switching tabs."""
+    """Loads a model into memory."""
     cfg = MODELS_CONFIG[model_name]
     base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,))
     base_model.trainable = False
@@ -104,7 +97,6 @@ def load_model(model_name):
     x = tf.keras.layers.Dropout(0.3)(x)
     outputs = tf.keras.layers.Dense(len(cfg["class_labels"]), activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
-    # Weights are loaded from the locally downloaded file
     model.load_weights(cfg["weights_file"])
     return model
 
@@ -140,16 +132,11 @@ def superimpose_gradcam(img, heatmap, alpha=0.6):
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 
-# Load the selected model
 model = load_model(selected_model_name)
-
-# Tabs for Single vs. Batch Upload
 tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
-# --- TAB 1: SINGLE IMAGE UPLOAD ---
 with tab1:
     st.header("Analyze a Single Image")
-    # --- CHANGED: Key is now dynamic to clear uploader on model change ---
     uploaded_file = st.file_uploader(
         "Upload an image for detailed analysis",
         type=["jpg", "jpeg", "png"],
@@ -179,34 +166,31 @@ with tab1:
                     st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
                 st.subheader("Model Attention (Grad-CAM)")
-                # Find the last convolutional layer dynamically
+                
+                # --- START: ERROR FIX ---
+                # Correctly search inside the base model layer for convolutional layers
+                base_model_layer = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
+
                 if base_model_layer:
-                conv_layer_names = [
-                    layer.name for layer in base_model_layer.layers 
-                    if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
-                ]
-                if conv_layer_names:
-                    last_conv_layer_name = conv_layer_names[-1]
-                    heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
-                    img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
-                    gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
-                    gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                    st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
+                    conv_layer_names = [
+                        layer.name for layer in base_model_layer.layers 
+                        if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
+                    ]
+                    if conv_layer_names:
+                        last_conv_layer_name = conv_layer_names[-1]
+                        heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
+                        img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
+                        gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
+                        gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
+                        st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
+                    else:
+                        st.error("Grad-CAM Error: No convolutional layers found in the base model.")
                 else:
-                    st.error("Grad-CAM Error: No convolutional layers found in the base model.")
-            else:
-                st.error("Grad-CAM Error: Could not find the base model layer.")
+                    st.error("Grad-CAM Error: Could not find the base model layer.")
+                # --- END: ERROR FIX ---
 
-                heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
-                img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
-                gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
-                gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
-
-# --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
-    # --- CHANGED: Key is now dynamic to clear uploader on model change ---
     uploaded_files = st.file_uploader(
         "Upload multiple images for classification",
         type=["jpg", "jpeg", "png"],
