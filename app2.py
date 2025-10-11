@@ -14,7 +14,7 @@ MODELS_CONFIG = {
     "ALL (EfficientNetB5)": {
         "model_builder": tf.keras.applications.EfficientNetB5,
         "weights_file": "efficientnetb5_all.weights.h5",
-        "file_id": "1wYoROoBNIbht_MiMAcJoZw7axolEJshBU",
+        "file_id": "1lMdsVrzp1kiQYUhLgqURTq55lsSIrFqh",
         "class_labels": ["all_benign", "all_early", "all_pre", "all_pro"],
         "image_size": (456, 456)
     },
@@ -35,7 +35,7 @@ MODELS_CONFIG = {
     "Cervical Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_cervical.weights.h5",
-        "file_id": "1g9to0qEO1cVpZGcKsoKo5CbAJ-1sABxv",
+        "file_id": "1qs5srYhnErT74Kq5fxh5vZLNmmAC4vGj",
         "class_labels": ['cervix_dyk', 'cervix_koc', 'cervix_mep', 'cervix_pab', 'cervix_sfi'],
         "image_size": (380, 380)
     }
