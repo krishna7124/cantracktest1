@@ -38,6 +38,14 @@ MODELS_CONFIG = {
         "file_id": "1g9to0qEO1cVpZGcKsoKo5CbAJ-1sABxv",
         "class_labels": ['cervix_dyk', 'cervix_koc', 'cervix_mep', 'cervix_pab', 'cervix_sfi'],
         "image_size": (380, 380)
+    },
+    # --- NEW: Kidney Cancer Model Added ---
+    "Kidney Cancer (EfficientNetB4)": {
+        "model_builder": tf.keras.applications.EfficientNetB4,
+        "weights_file": "efficientnetb4_kidney.weights.h5",
+        "file_id": "1uZw8-Y0YnP07gqJTU2o-ftH9rEXWEu6G", # Replace with your actual Google Drive file ID
+        "class_labels": ['kidney_normal', 'kidney_tumor'],
+        "image_size": (380, 380)
     }
 }
 CONFIDENCE_THRESHOLD = 50.0
@@ -48,7 +56,7 @@ CONFIDENCE_THRESHOLD = 50.0
 st.set_page_config(layout="wide")
 st.title("🔬 Multi-Cancer Type Image Classifier")
 
-# --- NEW: Auto-download all models on startup ---
+# --- Auto-download all models on startup ---
 @st.cache_resource(show_spinner="Performing initial setup: Downloading all model weights...")
 def download_all_models():
     """
@@ -59,7 +67,11 @@ def download_all_models():
         weights_file = config["weights_file"]
         if not os.path.exists(weights_file):
             print(f"Downloading weights for: {model_name}") # Log for debugging
-            gdown.download(id=config["file_id"], output=weights_file, quiet=False)
+            try:
+                gdown.download(id=config["file_id"], output=weights_file, quiet=False)
+            except Exception as e:
+                st.error(f"Could not download weights for {model_name}. File ID may be incorrect. Error: {e}")
+
 
 # Run the download function on app start.
 download_all_models()
@@ -137,7 +149,12 @@ tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 # --- TAB 1: SINGLE IMAGE UPLOAD ---
 with tab1:
     st.header("Analyze a Single Image")
-    uploaded_file = st.file_uploader("Upload an image for detailed analysis", type=["jpg", "jpeg", "png"], key="single_uploader")
+    # --- CHANGED: Key is now dynamic to clear uploader on model change ---
+    uploaded_file = st.file_uploader(
+        "Upload an image for detailed analysis",
+        type=["jpg", "jpeg", "png"],
+        key=f"single_uploader_{selected_model_name}"
+    )
 
     if uploaded_file is not None:
         col1, col2 = st.columns(2)
@@ -162,7 +179,8 @@ with tab1:
                     st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
                 st.subheader("Model Attention (Grad-CAM)")
-                last_conv_layer_name = [layer.name for layer in model.layers if isinstance(layer, tf.keras.layers.Conv2D)][-1]
+                # Find the last convolutional layer dynamically
+                last_conv_layer_name = [layer.name for layer in model.layers if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))][-1]
                 heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
                 img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
                 gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
@@ -172,7 +190,13 @@ with tab1:
 # --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
-    uploaded_files = st.file_uploader("Upload multiple images for classification", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="batch_uploader")
+    # --- CHANGED: Key is now dynamic to clear uploader on model change ---
+    uploaded_files = st.file_uploader(
+        "Upload multiple images for classification",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+        key=f"batch_uploader_{selected_model_name}"
+    )
 
     if uploaded_files:
         with st.spinner(f"Processing {len(uploaded_files)} images..."):
