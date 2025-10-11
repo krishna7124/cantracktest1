@@ -57,9 +57,7 @@ st.title("🔬 Multi-Cancer Type Image Classifier")
 
 @st.cache_resource(show_spinner="Performing initial setup: Downloading all model weights...")
 def download_all_models():
-    """
-    Iterates through the model config and downloads any missing weights files.
-    """
+    """Iterates through the model config and downloads any missing weights files."""
     for model_name, config in MODELS_CONFIG.items():
         weights_file = config["weights_file"]
         if not os.path.exists(weights_file):
@@ -108,7 +106,9 @@ def preprocess_image(img: Image.Image, image_size: tuple):
     return img_array
 
 def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
-    grad_model = tf.keras.models.Model([model.inputs], [model.get_layer(last_conv_layer_name).output, model.output])
+    grad_model = tf.keras.models.Model(
+        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+    )
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
         pred_index = tf.argmax(preds[0])
@@ -128,6 +128,15 @@ def superimpose_gradcam(img, heatmap, alpha=0.6):
     superimposed_img = np.clip(superimposed_img, 0, 255).astype(np.uint8)
     return superimposed_img
 
+def find_last_conv_layer(model):
+    """Finds the last convolutional layer in a nested Keras model."""
+    base_model_layer = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
+    if base_model_layer:
+        for layer in reversed(base_model_layer.layers):
+            if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D)):
+                return layer.name
+    return None
+
 # ==============================================================================
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
@@ -135,6 +144,7 @@ def superimpose_gradcam(img, heatmap, alpha=0.6):
 model = load_model(selected_model_name)
 tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
+# --- TAB 1: SINGLE IMAGE UPLOAD ---
 with tab1:
     st.header("Analyze a Single Image")
     uploaded_file = st.file_uploader(
@@ -149,7 +159,7 @@ with tab1:
         
         with col1:
             st.subheader("Uploaded Image")
-            st.image(original_image, use_column_width=True)
+            st.image(original_image, use_container_width=True)
         
         with st.spinner("Analyzing..."):
             img_array = preprocess_image(original_image, IMAGE_SIZE)
@@ -166,29 +176,17 @@ with tab1:
                     st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
                 st.subheader("Model Attention (Grad-CAM)")
-                
-                # --- START: ERROR FIX ---
-                # Correctly search inside the base model layer for convolutional layers
-                base_model_layer = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
-
-                if base_model_layer:
-                    conv_layer_names = [
-                        layer.name for layer in base_model_layer.layers 
-                        if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
-                    ]
-                    if conv_layer_names:
-                        last_conv_layer_name = conv_layer_names[-1]
-                        heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
-                        img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
-                        gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
-                        gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                        st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
-                    else:
-                        st.error("Grad-CAM Error: No convolutional layers found in the base model.")
+                last_conv_layer_name = find_last_conv_layer(model)
+                if last_conv_layer_name:
+                    heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
+                    img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
+                    gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
+                    gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
+                    st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_container_width=True)
                 else:
-                    st.error("Grad-CAM Error: Could not find the base model layer.")
-                # --- END: ERROR FIX ---
+                    st.error("Grad-CAM Error: Could not find a convolutional layer.")
 
+# --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
     uploaded_files = st.file_uploader(
@@ -199,13 +197,14 @@ with tab2:
     )
 
     if uploaded_files:
+        last_conv_layer_name = find_last_conv_layer(model)
         with st.spinner(f"Processing {len(uploaded_files)} images..."):
             for uploaded_file in uploaded_files:
                 col1, col2 = st.columns([1, 2])
                 original_image = Image.open(uploaded_file).convert("RGB")
 
                 with col1:
-                    st.image(original_image, use_column_width=True)
+                    st.image(original_image, use_container_width=True)
 
                 img_array = preprocess_image(original_image, IMAGE_SIZE)
                 pred = model.predict(img_array)
@@ -219,4 +218,13 @@ with tab2:
                     if confidence < CONFIDENCE_THRESHOLD:
                         st.warning("⚠️ **Low Confidence**")
                 
+                # --- NEW: GRAD-CAM VISUALIZATION FOR BATCH MODE ---
+                if last_conv_layer_name:
+                    heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
+                    img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
+                    gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
+                    gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
+                    with col1: # Display Grad-CAM under the original image
+                         st.image(gradcam_image_rgb, caption="Model Attention (Grad-CAM)", use_container_width=True)
+
                 st.divider()
