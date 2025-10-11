@@ -48,7 +48,6 @@ CONFIDENCE_THRESHOLD = 50.0
 st.set_page_config(layout="wide")
 st.title("🔬 Multi-Cancer Type Image Classifier")
 
-# --- NEW: Auto-download all models on startup ---
 @st.cache_resource(show_spinner="Performing initial setup: Downloading all model weights...")
 def download_all_models():
     """
@@ -58,20 +57,17 @@ def download_all_models():
     for model_name, config in MODELS_CONFIG.items():
         weights_file = config["weights_file"]
         if not os.path.exists(weights_file):
-            print(f"Downloading weights for: {model_name}") # Log for debugging
+            print(f"Downloading weights for: {model_name}")
             gdown.download(id=config["file_id"], output=weights_file, quiet=False)
 
-# Run the download function on app start.
 download_all_models()
 
-# --- Sidebar for Model Selection ---
 st.sidebar.title("⚙️ Controls")
 selected_model_name = st.sidebar.radio(
     "Choose the classification model:",
     list(MODELS_CONFIG.keys())
 )
 
-# Get configuration for the selected model
 config = MODELS_CONFIG[selected_model_name]
 CLASS_LABELS = config["class_labels"]
 IMAGE_SIZE = config["image_size"]
@@ -82,7 +78,6 @@ IMAGE_SIZE = config["image_size"]
 
 @st.cache_resource(show_spinner="Loading classification model...")
 def load_model(model_name):
-    """Loads a model into memory. Cached to prevent reloading when switching tabs."""
     cfg = MODELS_CONFIG[model_name]
     base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,))
     base_model.trainable = False
@@ -92,7 +87,6 @@ def load_model(model_name):
     x = tf.keras.layers.Dropout(0.3)(x)
     outputs = tf.keras.layers.Dense(len(cfg["class_labels"]), activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
-    # Weights are loaded from the locally downloaded file
     model.load_weights(cfg["weights_file"])
     return model
 
@@ -128,10 +122,7 @@ def superimpose_gradcam(img, heatmap, alpha=0.6):
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 
-# Load the selected model
 model = load_model(selected_model_name)
-
-# Tabs for Single vs. Batch Upload
 tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
 # --- TAB 1: SINGLE IMAGE UPLOAD ---
@@ -169,30 +160,31 @@ with tab1:
                 gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
                 st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
 
-# --- TAB 2: BATCH IMAGE UPLOAD ---
+# --- TAB 2: BATCH IMAGE UPLOAD (UPDATED) ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
     uploaded_files = st.file_uploader("Upload multiple images for classification", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="batch_uploader")
 
     if uploaded_files:
+        # Define the number of columns for the grid view
+        num_columns = 4
+        cols = st.columns(num_columns)
+        
         with st.spinner(f"Processing {len(uploaded_files)} images..."):
-            for uploaded_file in uploaded_files:
-                col1, col2 = st.columns([1, 2])
-                original_image = Image.open(uploaded_file).convert("RGB")
+            # Iterate through uploaded files and display results in the grid
+            for i, uploaded_file in enumerate(uploaded_files):
+                with cols[i % num_columns]:
+                    original_image = Image.open(uploaded_file).convert("RGB")
+                    
+                    # Perform prediction
+                    img_array = preprocess_image(original_image, IMAGE_SIZE)
+                    pred = model.predict(img_array)
+                    class_index = np.argmax(pred[0])
+                    confidence = np.max(pred) * 100
+                    predicted_class = CLASS_LABELS[class_index]
 
-                with col1:
-                    st.image(original_image, use_column_width=True)
-
-                img_array = preprocess_image(original_image, IMAGE_SIZE)
-                pred = model.predict(img_array)
-                class_index = np.argmax(pred[0])
-                confidence = np.max(pred) * 100
-                
-                with col2:
-                    st.write(f"**File:** `{uploaded_file.name}`")
-                    st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
-                    st.info(f"**Confidence:** `{confidence:.2f}%`")
-                    if confidence < CONFIDENCE_THRESHOLD:
-                        st.warning("⚠️ **Low Confidence**")
-                
-                st.divider()
+                    # Create the caption text with the result
+                    caption_text = f"Prediction: {predicted_class} ({confidence:.1f}%)"
+                    
+                    # Display the image with its prediction as a caption
+                    st.image(original_image, caption=caption_text, use_column_width=True)
