@@ -180,7 +180,23 @@ with tab1:
 
                 st.subheader("Model Attention (Grad-CAM)")
                 # Find the last convolutional layer dynamically
-                last_conv_layer_name = [layer.name for layer in model.layers if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))][-1]
+                if base_model_layer:
+                conv_layer_names = [
+                    layer.name for layer in base_model_layer.layers 
+                    if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
+                ]
+                if conv_layer_names:
+                    last_conv_layer_name = conv_layer_names[-1]
+                    heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
+                    img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
+                    gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
+                    gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
+                    st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_column_width=True)
+                else:
+                    st.error("Grad-CAM Error: No convolutional layers found in the base model.")
+            else:
+                st.error("Grad-CAM Error: Could not find the base model layer.")
+
                 heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
                 img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
                 gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
