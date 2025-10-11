@@ -105,20 +105,38 @@ def preprocess_image(img: Image.Image, image_size: tuple):
     img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
     return img_array
 
+# --- START: ERROR FIX in get_gradcam_heatmap ---
 def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
+    """
+    Creates a Grad-CAM heatmap. This function now correctly handles nested models.
+    """
+    # First, find the base model layer within the main model
+    base_model = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
+    if not base_model:
+        raise ValueError("Could not find the base model layer for Grad-CAM.")
+
+    # Now, create the Grad-CAM model by referencing the layer INSIDE the base model
     grad_model = tf.keras.models.Model(
-        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+        [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
     )
+
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
         pred_index = tf.argmax(preds[0])
         class_channel = preds[:, pred_index]
+
     grads = tape.gradient(class_channel, last_conv_layer_output)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
     heatmap = last_conv_layer_output[0] @ pooled_grads[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
-    heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
+
+    # Normalize the heatmap and prevent division by zero
+    max_val = tf.math.reduce_max(heatmap)
+    if max_val == 0:
+        return heatmap.numpy()
+    heatmap = tf.maximum(heatmap, 0) / max_val
     return heatmap.numpy()
+# --- END: ERROR FIX ---
 
 def superimpose_gradcam(img, heatmap, alpha=0.6):
     heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
@@ -218,13 +236,12 @@ with tab2:
                     if confidence < CONFIDENCE_THRESHOLD:
                         st.warning("⚠️ **Low Confidence**")
                 
-                # --- NEW: GRAD-CAM VISUALIZATION FOR BATCH MODE ---
                 if last_conv_layer_name:
                     heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
                     img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
                     gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
                     gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                    with col1: # Display Grad-CAM under the original image
+                    with col1:
                          st.image(gradcam_image_rgb, caption="Model Attention (Grad-CAM)", use_container_width=True)
 
                 st.divider()
