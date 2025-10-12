@@ -45,6 +45,31 @@ MODELS_CONFIG = {
         "file_id": "1uZw8-Y0YnP07gqJTU2o-ftH9rEXWEu6G",
         "class_labels": ['kidney_normal', 'kidney_tumor'],
         "image_size": (380, 380)
+    },
+    # --- NEW MODELS ADDED BELOW ---
+    "Lung & Colon Cancer (EfficientNetB4)": {
+        "model_builder": tf.keras.applications.EfficientNetB4,
+        "weights_file": "efficientnetb4_lung_colon.weights.h5",
+        "file_id": "1zG3mCvEYi84WdyBmU-Wn7HxsZkkqJqxG", # <-- UPDATE THIS
+        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "class_labels": ['colon_aca', 'colon_n', 'lung_aca', 'lung_n', 'lung_scc'],
+        "image_size": (380, 380)
+    },
+    "Lymphoma (EfficientNetB4)": {
+        "model_builder": tf.keras.applications.EfficientNetB4,
+        "weights_file": "efficientnetb4_lymphoma.weights.h5",
+        "file_id": "12YqVtuJrTqEPh_JCfaigbe3GYExlLoOO", # <-- UPDATE THIS
+        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "class_labels": ['cll', 'fl', 'mcl'],
+        "image_size": (380, 380)
+    },
+    "Oral Cancer (EfficientNetB4)": {
+        "model_builder": tf.keras.applications.EfficientNetB4,
+        "weights_file": "efficientnetb4_oral.weights.h5",
+        "file_id": "1S_GMcKpUrVTv-4V6VlYHPU9lxxCQ6deW", # <-- UPDATE THIS
+        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "class_labels": ['oral_cancer', 'oral_normal'],
+        "image_size": (380, 380)
     }
 }
 CONFIDENCE_THRESHOLD = 50.0
@@ -108,7 +133,6 @@ def preprocess_image(img: Image.Image, image_size: tuple):
     return img_array
 
 def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
-    # This function now correctly handles nested models by getting the layer from the base model
     base_model = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
     if not base_model:
         raise ValueError("Could not find the base model layer for Grad-CAM.")
@@ -146,6 +170,7 @@ def superimpose_gradcam(img, heatmap, alpha=0.6):
 model = load_model(selected_model_name)
 tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
+# --- TAB 1: SINGLE IMAGE UPLOAD ---
 with tab1:
     st.header("Analyze a Single Image")
     uploaded_file = st.file_uploader(
@@ -160,7 +185,6 @@ with tab1:
         
         with col1:
             st.subheader("Uploaded Image")
-            # --- DEPRECATION FIX ---
             st.image(original_image, use_container_width=True)
         
         with st.spinner("Analyzing..."):
@@ -180,7 +204,6 @@ with tab1:
                 st.subheader("Model Attention (Grad-CAM)")
                 
                 base_model_layer = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
-
                 if base_model_layer:
                     conv_layer_names = [
                         layer.name for layer in base_model_layer.layers 
@@ -192,13 +215,13 @@ with tab1:
                         img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
                         gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
                         gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                        # --- DEPRECATION FIX ---
                         st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_container_width=True)
                     else:
                         st.error("Grad-CAM Error: No convolutional layers found in the base model.")
                 else:
                     st.error("Grad-CAM Error: Could not find the base model layer.")
 
+# --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
     uploaded_files = st.file_uploader(
@@ -210,24 +233,20 @@ with tab2:
 
     if uploaded_files:
         with st.spinner(f"Processing {len(uploaded_files)} images..."):
-            for uploaded_file in uploaded_files:
-                col1, col2 = st.columns([1, 2])
-                original_image = Image.open(uploaded_file).convert("RGB")
+            # Display results in a grid
+            num_columns = 4
+            cols = st.columns(num_columns)
+            for i, uploaded_file in enumerate(uploaded_files):
+                with cols[i % num_columns]:
+                    original_image = Image.open(uploaded_file).convert("RGB")
+                    
+                    # Perform prediction
+                    img_array = preprocess_image(original_image, IMAGE_SIZE)
+                    pred = model.predict(img_array)
+                    class_index = np.argmax(pred[0])
+                    confidence = np.max(pred) * 100
+                    predicted_class = CLASS_LABELS[class_index]
 
-                with col1:
-                    # --- DEPRECATION FIX ---
-                    st.image(original_image, use_container_width=True)
-
-                img_array = preprocess_image(original_image, IMAGE_SIZE)
-                pred = model.predict(img_array)
-                class_index = np.argmax(pred[0])
-                confidence = np.max(pred) * 100
-                
-                with col2:
-                    st.write(f"**File:** `{uploaded_file.name}`")
-                    st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
-                    st.info(f"**Confidence:** `{confidence:.2f}%`")
-                    if confidence < CONFIDENCE_THRESHOLD:
-                        st.warning("⚠️ **Low Confidence**")
-                
-                st.divider()
+                    # Create caption and display image
+                    caption_text = f"Prediction: {predicted_class} ({confidence:.1f}%)"
+                    st.image(original_image, caption=caption_text, use_container_width=True)
