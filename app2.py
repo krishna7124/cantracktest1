@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import os
 import gdown
-import cv2  # Used for Grad-CAM visualization
+# import cv2  # --- GRAD-CAM REMOVED --- Temporarily commented out as it's not used
 
 # ==============================================================================
 # 1. MODELS CONFIGURATION
@@ -46,28 +46,24 @@ MODELS_CONFIG = {
         "class_labels": ['kidney_normal', 'kidney_tumor'],
         "image_size": (380, 380)
     },
-    # --- NEW MODELS ADDED BELOW ---
     "Lung & Colon Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_lung_colon.weights.h5",
-        "file_id": "1zG3mCvEYi84WdyBmU-Wn7HxsZkkqJqxG", # <-- UPDATE THIS
-        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "file_id": "1zG3mCvEYi84WdyBmU-Wn7HxsZkkqJqxG",
         "class_labels": ['colon_aca', 'colon_n', 'lung_aca', 'lung_n', 'lung_scc'],
         "image_size": (380, 380)
     },
     "Lymphoma (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_lymphoma.weights.h5",
-        "file_id": "12YqVtuJrTqEPh_JCfaigbe3GYExlLoOO", # <-- UPDATE THIS
-        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "file_id": "12YqVtuJrTqEPh_JCfaigbe3GYExlLoOO",
         "class_labels": ['cll', 'fl', 'mcl'],
         "image_size": (380, 380)
     },
     "Oral Cancer (EfficientNetB4)": {
         "model_builder": tf.keras.applications.EfficientNetB4,
         "weights_file": "efficientnetb4_oral.weights.h5",
-        "file_id": "1S_GMcKpUrVTv-4V6VlYHPU9lxxCQ6deW", # <-- UPDATE THIS
-        # V-- IMPORTANT: UPDATE THESE LABELS TO MATCH YOUR TRAINING FOLDERS --V
+        "file_id": "1S_GMcKpUrVTv-4V6VlYHPU9lxxCQ6deW",
         "class_labels": ['oral_cancer', 'oral_normal'],
         "image_size": (380, 380)
     }
@@ -132,36 +128,13 @@ def preprocess_image(img: Image.Image, image_size: tuple):
     img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
     return img_array
 
-def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
-    base_model = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
-    if not base_model:
-        raise ValueError("Could not find the base model layer for Grad-CAM.")
-
-    grad_model = tf.keras.models.Model(
-        [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
-    )
-    with tf.GradientTape() as tape:
-        last_conv_layer_output, preds = grad_model(img_array)
-        pred_index = tf.argmax(preds[0])
-        class_channel = preds[:, pred_index]
-    grads = tape.gradient(class_channel, last_conv_layer_output)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    heatmap = last_conv_layer_output[0] @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
-    
-    max_val = tf.math.reduce_max(heatmap)
-    if max_val == 0:
-        return heatmap.numpy()
-    heatmap = tf.maximum(heatmap, 0) / max_val
-    return heatmap.numpy()
-
-def superimpose_gradcam(img, heatmap, alpha=0.6):
-    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    superimposed_img = heatmap * alpha + img
-    superimposed_img = np.clip(superimposed_img, 0, 255).astype(np.uint8)
-    return superimposed_img
+# --- GRAD-CAM REMOVED ---
+# The two helper functions for Grad-CAM are temporarily commented out.
+# def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
+#     ...
+#
+# def superimpose_gradcam(img, heatmap, alpha=0.6):
+#     ...
 
 # ==============================================================================
 # 4. MAIN APPLICATION LOGIC
@@ -180,12 +153,11 @@ with tab1:
     )
 
     if uploaded_file is not None:
-        col1, col2 = st.columns(2)
+        # The layout is simplified to one main column for now
         original_image = Image.open(uploaded_file).convert("RGB")
         
-        with col1:
-            st.subheader("Uploaded Image")
-            st.image(original_image, use_container_width=True)
+        st.subheader("Uploaded Image")
+        st.image(original_image, use_container_width=True)
         
         with st.spinner("Analyzing..."):
             img_array = preprocess_image(original_image, IMAGE_SIZE)
@@ -193,33 +165,17 @@ with tab1:
             class_index = np.argmax(pred[0])
             confidence = np.max(pred) * 100
             
-            with col2:
-                st.subheader("Analysis Result")
-                st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
-                st.info(f"**Confidence:** `{confidence:.2f}%`")
-                
-                if confidence < CONFIDENCE_THRESHOLD:
-                    st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
+            st.subheader("Analysis Result")
+            st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
+            st.info(f"**Confidence:** `{confidence:.2f}%`")
+            
+            if confidence < CONFIDENCE_THRESHOLD:
+                st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
-                st.subheader("Model Attention (Grad-CAM)")
-                
-                base_model_layer = next((layer for layer in model.layers if isinstance(layer, tf.keras.Model)), None)
-                if base_model_layer:
-                    conv_layer_names = [
-                        layer.name for layer in base_model_layer.layers 
-                        if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D))
-                    ]
-                    if conv_layer_names:
-                        last_conv_layer_name = conv_layer_names[-1]
-                        heatmap = get_gradcam_heatmap(img_array, model, last_conv_layer_name)
-                        img_for_gradcam = cv2.resize(np.array(original_image), IMAGE_SIZE)
-                        gradcam_image = superimpose_gradcam(img_for_gradcam, heatmap)
-                        gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB)
-                        st.image(gradcam_image_rgb, caption="Heatmap shows where the model is 'looking'.", use_container_width=True)
-                    else:
-                        st.error("Grad-CAM Error: No convolutional layers found in the base model.")
-                else:
-                    st.error("Grad-CAM Error: Could not find the base model layer.")
+            # --- GRAD-CAM REMOVED ---
+            # The entire section for displaying the Grad-CAM heatmap is commented out.
+            # st.subheader("Model Attention (Grad-CAM)")
+            # ...
 
 # --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
