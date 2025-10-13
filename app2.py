@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import os
 import gdown
-# import cv2  # --- GRAD-CAM REMOVED --- Temporarily commented out as it's not used
+# import cv2  # --- GRAD-CAM REMOVED ---
 
 # ==============================================================================
 # 1. MODELS CONFIGURATION
@@ -65,6 +65,14 @@ MODELS_CONFIG = {
         "weights_file": "efficientnetb4_oral.weights.h5",
         "file_id": "1S_GMcKpUrVTv-4V6VlYHPU9lxxCQ6deW",
         "class_labels": ['oral_cancer', 'oral_normal'],
+        "image_size": (380, 380)
+    },
+    # --- 9th MODEL ADDED BELOW ---
+    "Liver Cancer (CT Scan)": {
+        "model_builder": tf.keras.applications.EfficientNetB4,
+        "weights_file": "efficientnetb4_liver_ct.weights.h5",
+        "file_id": "1EVSbuyPc4gfa4Hdk577BNFtMu8AzPgPP", # <-- IMPORTANT: ADD THE NEW FILE ID
+        "class_labels": ['cancerous', 'non_cancerous'],   # Based on your training script
         "image_size": (380, 380)
     }
 }
@@ -128,14 +136,6 @@ def preprocess_image(img: Image.Image, image_size: tuple):
     img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
     return img_array
 
-# --- GRAD-CAM REMOVED ---
-# The two helper functions for Grad-CAM are temporarily commented out.
-# def get_gradcam_heatmap(img_array, model, last_conv_layer_name):
-#     ...
-#
-# def superimpose_gradcam(img, heatmap, alpha=0.6):
-#     ...
-
 # ==============================================================================
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
@@ -153,7 +153,6 @@ with tab1:
     )
 
     if uploaded_file is not None:
-        # The layout is simplified to one main column for now
         original_image = Image.open(uploaded_file).convert("RGB")
         
         st.subheader("Uploaded Image")
@@ -172,11 +171,6 @@ with tab1:
             if confidence < CONFIDENCE_THRESHOLD:
                 st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
-            # --- GRAD-CAM REMOVED ---
-            # The entire section for displaying the Grad-CAM heatmap is commented out.
-            # st.subheader("Model Attention (Grad-CAM)")
-            # ...
-
 # --- TAB 2: BATCH IMAGE UPLOAD ---
 with tab2:
     st.header("Analyze Multiple Images in a Batch")
@@ -189,20 +183,17 @@ with tab2:
 
     if uploaded_files:
         with st.spinner(f"Processing {len(uploaded_files)} images..."):
-            # Display results in a grid
             num_columns = 4
             cols = st.columns(num_columns)
             for i, uploaded_file in enumerate(uploaded_files):
                 with cols[i % num_columns]:
                     original_image = Image.open(uploaded_file).convert("RGB")
                     
-                    # Perform prediction
                     img_array = preprocess_image(original_image, IMAGE_SIZE)
                     pred = model.predict(img_array)
                     class_index = np.argmax(pred[0])
                     confidence = np.max(pred) * 100
                     predicted_class = CLASS_LABELS[class_index]
 
-                    # Create caption and display image
                     caption_text = f"Prediction: {predicted_class} ({confidence:.1f}%)"
                     st.image(original_image, caption=caption_text, use_container_width=True)
