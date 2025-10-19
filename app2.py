@@ -168,7 +168,7 @@ def load_model(model_name):
         
     elif cfg["model_type"] == "classifier":
         base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,), name="efficientnet_base")
-        # ## KEY FIX ##: Freezing the base model simplifies the graph for Grad-CAM
+        # ## This is the crucial line to fix the error ##
         base_model.trainable = False 
         
         inputs = layers.Input(shape=cfg["image_size"] + (3,))
