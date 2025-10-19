@@ -115,9 +115,9 @@ MODELS_CONFIG = {
         "model_type": "anomaly",
         "model_builder": build_autoencoder,
         "weights_file": "blood_cancer.weights.h5",
-        "file_id": "1nY9v7DTNEDG_-sr4mb2aqMjj2k3iestB", # Assumes the .h5 file is local and not on GDrive
+        "file_id": "1nY9v7DTNEDG_-sr4mb2aqMjj2k3iestB",
         "image_size": (256, 256),
-        "threshold": 0.007659 # The reconstruction error threshold from your training
+        "threshold": 0.007659
     }
 }
 CONFIDENCE_THRESHOLD = 50.0
@@ -134,6 +134,7 @@ def download_all_models():
     for model_name, config in MODELS_CONFIG.items():
         if config.get("file_id"):
             weights_file = config.get("weights_file")
+            # --- FIX 1: Message now only shows when a download is needed ---
             if weights_file and not os.path.exists(weights_file):
                 st.info(f"Downloading weights for: {model_name}...")
                 try:
@@ -144,7 +145,8 @@ def download_all_models():
 download_all_models()
 
 st.sidebar.title("⚙️ Controls")
-model_keys = sorted(list(MODELS_CONFIG.keys()))
+# --- FIX 2: Removed sorted() to maintain the dictionary order in the UI ---
+model_keys = list(MODELS_CONFIG.keys())
 selected_model_name = st.sidebar.radio("Choose the analysis model:", model_keys)
 
 config = MODELS_CONFIG[selected_model_name]
@@ -159,7 +161,6 @@ def load_model(model_name):
     """Builds a model based on its config and loads its weights."""
     cfg = MODELS_CONFIG[model_name]
     
-    # Check if weights file exists before building model
     weights_file = cfg.get("weights_file")
     if not weights_file or not os.path.exists(weights_file):
         st.error(f"Weights file not found: {weights_file}. Please ensure it's in the app's directory.")
