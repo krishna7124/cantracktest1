@@ -5,12 +5,11 @@ import numpy as np
 from PIL import Image
 import os
 import gdown
-import cv2 # <-- ADDED IMPORT FOR GRAD-CAM
+import cv2
 
 # ==============================================================================
 # 1. HELPER FUNCTION TO BUILD THE AUTOENCODER ARCHITECTURE
 # ==============================================================================
-# This function is required to build the anomaly detector's structure before loading its weights.
 def build_autoencoder(input_shape):
     """Builds the autoencoder model architecture."""
     inputs = layers.Input(shape=input_shape)
@@ -171,8 +170,9 @@ def load_model(model_name):
         return model
         
     elif cfg["model_type"] == "classifier":
-        base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,))
-        inputs = layers.Input(shape=cfg["image_size"] + (3,))
+        # Note: A name is explicitly given to the base_model for easier access later
+        base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,), name="efficientnet_base")
+        inputs = layers.Input(shape=cfg["image_size"] + (3,), name="input_layer")
         x = base_model(inputs, training=False)
         x = layers.GlobalAveragePooling2D()(x)
         outputs = layers.Dense(len(cfg["class_labels"]), activation="softmax")(x)
@@ -193,51 +193,35 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
     return np.expand_dims(img_array, axis=0)
 
 # ==============================================================================
-# 4.1. GRAD-CAM HELPER FUNCTIONS (NEW SECTION)
+# 4.1. GRAD-CAM HELPER FUNCTIONS
 # ==============================================================================
-def find_last_conv_layer(model):
-    """Finds the name of the last convolutional layer in the model."""
-    for layer in reversed(model.layers):
-        # Check for Conv2D layer in the base model of the classifier
-        if isinstance(layer, models.Model) and layer.name.startswith("efficientnet"):
-             for sub_layer in reversed(layer.layers):
-                 if isinstance(sub_layer, layers.Conv2D):
-                     return sub_layer.name
-    raise ValueError("No Conv2D layer found in the model's EfficientNet base.")
-
-
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
     """Generates the Grad-CAM heatmap."""
-    # Create a model that maps the input image to the activations
-    # of the last conv layer as well as the output predictions
-    grad_model = tf.keras.models.Model(
-        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+    # The Grad-CAM model takes the input image and outputs the activations of the
+    # last conv layer AND the final predictions.
+    # ## KEY FIX ##: We get the specific conv layer's output from the *base model*
+    base_model = model.get_layer('efficientnet_base')
+    grad_model = models.Model(
+        [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
     )
 
-    # Then, we compute the gradient of the top predicted class for our input image
-    # with respect to the activations of the last conv layer
+    # Compute the gradient of the top predicted class with respect to the
+    # activations of the last conv layer
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
         if pred_index is None:
             pred_index = tf.argmax(preds[0])
         class_channel = preds[:, pred_index]
 
-    # This is the gradient of the output neuron (top predicted or chosen)
-    # with regard to the output feature map of the last conv layer
     grads = tape.gradient(class_channel, last_conv_layer_output)
-
-    # This is a vector where each entry is the mean intensity of the gradient
-    # over a specific feature map channel
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    # We multiply each channel in the feature map array
-    # by "how important this channel is" with regard to the top predicted class
     last_conv_layer_output = last_conv_layer_output[0]
     heatmap = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
 
-    # For visualization purpose, we will also normalize the heatmap between 0 & 1
-    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
+    # Normalize the heatmap
+    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8) # Add epsilon
     return heatmap.numpy()
 
 def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
@@ -298,7 +282,6 @@ else:
         st.header("Analyze a Single Image")
         uploaded_file = st.file_uploader("Upload an image for analysis", type=["jpg", "jpeg", "png"], key=f"single_{selected_model_name}")
         
-        # --- MODIFIED LOGIC FOR GRAD-CAM ---
         if uploaded_file:
             original_image = Image.open(uploaded_file).convert("RGB")
             
@@ -310,8 +293,8 @@ else:
                 class_index = np.argmax(pred[0])
                 
                 try:
-                    # Find the last conv layer in the base model
-                    base_model = next(l for l in model.layers if l.name.startswith('efficientnet'))
+                    # Find the base model and the name of its last conv layer
+                    base_model = model.get_layer('efficientnet_base')
                     last_conv_layer_name = next(l.name for l in reversed(base_model.layers) if isinstance(l, layers.Conv2D))
 
                     # Generate and overlay heatmap
@@ -333,7 +316,6 @@ else:
 
                 if confidence < CONFIDENCE_THRESHOLD:
                     st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
-        # --- END OF MODIFIED LOGIC ---
 
     with tab2:
         st.header("Analyze Multiple Images")
