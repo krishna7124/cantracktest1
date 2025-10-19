@@ -133,17 +133,11 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
     return np.expand_dims(img_array, axis=0)
 
 # ======================================================================
-# 4.1. GRAD-CAM FUNCTIONS
+# 4.1. GRAD-CAM++ FUNCTIONS (REPLACEMENT)
 # ======================================================================
 def _find_last_conv_layer(base_model):
     for layer in reversed(base_model.layers):
-        out_shape = getattr(layer, "output_shape", None)
-        cls_name = layer.__class__.__name__.lower()
-        if out_shape and len(out_shape) == 4 and ("conv" in cls_name or "depthwise" in cls_name):
-            return layer.name
-    for layer in reversed(base_model.layers):
-        out_shape = getattr(layer, "output_shape", None)
-        if out_shape and len(out_shape) == 4:
+        if len(layer.output_shape) == 4 and "conv" in layer.name:
             return layer.name
     return None
 
@@ -154,37 +148,51 @@ def get_last_conv_layer_name_from_model(model):
         return None
     return _find_last_conv_layer(base_model)
 
-def make_gradcam_heatmap(img_array, model, last_conv_layer_name=None, pred_index=None):
-    try:
-        base_model = model.get_layer('efficientnet_base')
-    except Exception as e:
-        raise RuntimeError("Could not find 'efficientnet_base' layer in model.") from e
-
-    if last_conv_layer_name is None:
-        last_conv_layer_name = _find_last_conv_layer(base_model)
-        if last_conv_layer_name is None:
-            raise RuntimeError("No suitable conv layer found for Grad-CAM.")
-
-    grad_model = models.Model([model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output])
+def make_gradcam_plus_plus_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
+    """Generates a Grad-CAM++ heatmap."""
+    base_model = model.get_layer('efficientnet_base')
+    grad_model = models.Model(
+        [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
+    )
 
     with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
+        last_conv_layer_output, preds = grad_model(img_array)
         if pred_index is None:
-            pred_index = tf.argmax(predictions[0])
-        loss = predictions[:, pred_index]
+            pred_index = tf.argmax(preds[0])
+        class_channel = preds[:, pred_index]
 
-    grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_outputs = conv_outputs[0]
-    weighted = conv_outputs * pooled_grads[tf.newaxis, tf.newaxis, :]
-    heatmap = tf.reduce_sum(weighted, axis=-1)
+    grads = tape.gradient(class_channel, last_conv_layer_output)
+    
+    # Grad-CAM++ calculations
+    first_derivative = tf.exp(class_channel)[0] * grads
+    second_derivative = first_derivative * grads
+    third_derivative = second_derivative * grads
+    
+    alpha_num = second_derivative
+    alpha_denom = 2.0 * second_derivative + tf.reduce_sum(third_derivative, axis=tuple(range(len(third_derivative.shape)-1)), keepdims=True) * last_conv_layer_output
+    alpha_denom = tf.where(alpha_denom != 0.0, alpha_denom, 1e-10)
+    
+    alphas = alpha_num / alpha_denom
+    
+    weights = tf.maximum(first_derivative, 0.0)
+    alpha_normalization_constant = tf.reduce_sum(alphas, axis=tuple(range(len(alphas.shape)-1)), keepdims=True)
+    alphas /= alpha_normalization_constant
+    
+    deep_linearization_weights = tf.reduce_sum(weights * alphas, axis=tuple(range(len(weights.shape)-1)), keepdims=True)
+    
+    # Create heatmap
+    grad_cam_map = tf.reduce_sum(deep_linearization_weights * last_conv_layer_output, axis=-1)
+    heatmap = tf.squeeze(grad_cam_map)
+
+    # Normalize heatmap
     heatmap = tf.maximum(heatmap, 0)
     max_val = tf.reduce_max(heatmap)
-    if tf.equal(max_val, 0):
-        heatmap = tf.zeros_like(heatmap)
-    else:
-        heatmap = heatmap / (max_val + 1e-8)
+    if max_val == 0:
+        max_val = 1e-10
+    heatmap = heatmap / max_val
+    
     return heatmap.numpy()
+
 
 def overlay_heatmap(original_img_pil, heatmap, alpha=0.45, colormap=cv2.COLORMAP_JET):
     if heatmap is None:
@@ -263,20 +271,22 @@ else:  # Classifier
             if confidence < CONFIDENCE_THRESHOLD:
                 st.warning("⚠️ Low Confidence: Result may be inaccurate.")
 
-            # Grad-CAM
+            # Grad-CAM++
             try:
                 last_conv_layer_name = get_last_conv_layer_name_from_model(model)
                 if last_conv_layer_name:
-                    heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=class_index)
+                    # UPDATED FUNCTION CALL
+                    heatmap = make_gradcam_plus_plus_heatmap(img_array, model, last_conv_layer_name, pred_index=class_index)
                     grad_cam_image = overlay_heatmap(original_image, heatmap, alpha=0.45)
                     col1, col2 = st.columns(2)
                     col1.image(original_image, caption="Original Image", use_container_width=True)
-                    col2.image(grad_cam_image, caption="Grad-CAM Heatmap", use_container_width=True)
+                    # UPDATED CAPTION
+                    col2.image(grad_cam_image, caption="Grad-CAM++ Heatmap", use_container_width=True)
                 else:
-                    st.warning("No suitable conv layer for Grad-CAM found. Skipping heatmap.")
+                    st.warning("No suitable conv layer for Grad-CAM++ found. Skipping heatmap.")
                     st.image(original_image, caption="Uploaded Image", use_container_width=True)
             except Exception as e:
-                st.error(f"Grad-CAM error: {e}")
+                st.error(f"Grad-CAM++ error: {e}")
                 st.image(original_image, caption="Uploaded Image", use_container_width=True)
 
     with tab2:
