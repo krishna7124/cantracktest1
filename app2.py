@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 import os
 import gdown
+import cv2 # <-- ADDED IMPORT FOR GRAD-CAM
 
 # ==============================================================================
 # 1. HELPER FUNCTION TO BUILD THE AUTOENCODER ARCHITECTURE
@@ -114,8 +115,8 @@ MODELS_CONFIG = {
     "Bone Cancer (Anomaly Detector)": {
         "model_type": "anomaly",
         "model_builder": build_autoencoder,
-        "weights_file": "blood_cancer.weights.h5",
-        "file_id": "1nY9v7DTNEDG_-sr4mb2aqMjj2k3iestB",
+        "weights_file": "bone_cancer.weights.h5",
+        "file_id": "17eWk6R8eDrLIEouwHiX-3_LZKNkPYoMb",
         "image_size": (256, 256),
         "threshold": 0.007659
     }
@@ -134,7 +135,6 @@ def download_all_models():
     for model_name, config in MODELS_CONFIG.items():
         if config.get("file_id"):
             weights_file = config.get("weights_file")
-            # --- FIX 1: Message now only shows when a download is needed ---
             if weights_file and not os.path.exists(weights_file):
                 st.info(f"Downloading weights for: {model_name}...")
                 try:
@@ -145,7 +145,6 @@ def download_all_models():
 download_all_models()
 
 st.sidebar.title("⚙️ Controls")
-# --- FIX 2: Removed sorted() to maintain the dictionary order in the UI ---
 model_keys = list(MODELS_CONFIG.keys())
 selected_model_name = st.sidebar.radio("Choose the analysis model:", model_keys)
 
@@ -194,6 +193,64 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
     return np.expand_dims(img_array, axis=0)
 
 # ==============================================================================
+# 4.1. GRAD-CAM HELPER FUNCTIONS (NEW SECTION)
+# ==============================================================================
+def find_last_conv_layer(model):
+    """Finds the name of the last convolutional layer in the model."""
+    for layer in reversed(model.layers):
+        # Check for Conv2D layer in the base model of the classifier
+        if isinstance(layer, models.Model) and layer.name.startswith("efficientnet"):
+             for sub_layer in reversed(layer.layers):
+                 if isinstance(sub_layer, layers.Conv2D):
+                     return sub_layer.name
+    raise ValueError("No Conv2D layer found in the model's EfficientNet base.")
+
+
+def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
+    """Generates the Grad-CAM heatmap."""
+    # Create a model that maps the input image to the activations
+    # of the last conv layer as well as the output predictions
+    grad_model = tf.keras.models.Model(
+        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
+    )
+
+    # Then, we compute the gradient of the top predicted class for our input image
+    # with respect to the activations of the last conv layer
+    with tf.GradientTape() as tape:
+        last_conv_layer_output, preds = grad_model(img_array)
+        if pred_index is None:
+            pred_index = tf.argmax(preds[0])
+        class_channel = preds[:, pred_index]
+
+    # This is the gradient of the output neuron (top predicted or chosen)
+    # with regard to the output feature map of the last conv layer
+    grads = tape.gradient(class_channel, last_conv_layer_output)
+
+    # This is a vector where each entry is the mean intensity of the gradient
+    # over a specific feature map channel
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    # We multiply each channel in the feature map array
+    # by "how important this channel is" with regard to the top predicted class
+    last_conv_layer_output = last_conv_layer_output[0]
+    heatmap = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
+    heatmap = tf.squeeze(heatmap)
+
+    # For visualization purpose, we will also normalize the heatmap between 0 & 1
+    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
+    return heatmap.numpy()
+
+def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
+    """Overlays a heatmap onto the original image."""
+    original_img_np = np.array(original_img.convert("RGB"))
+    heatmap_resized = cv2.resize(heatmap, (original_img_np.shape[1], original_img_np.shape[0]))
+    
+    heatmap_colored = (cv2.cvtColor(cv2.applyColorMap(np.uint8(255 * heatmap_resized), colormap), cv2.COLOR_BGR2RGB))
+    
+    superimposed_img = (heatmap_colored * (1 - alpha) + original_img_np * alpha).astype(np.uint8)
+    return Image.fromarray(superimposed_img)
+
+# ==============================================================================
 # 5. MAIN APPLICATION LOGIC
 # ==============================================================================
 model = load_model(selected_model_name)
@@ -240,18 +297,43 @@ else:
     with tab1:
         st.header("Analyze a Single Image")
         uploaded_file = st.file_uploader("Upload an image for analysis", type=["jpg", "jpeg", "png"], key=f"single_{selected_model_name}")
+        
+        # --- MODIFIED LOGIC FOR GRAD-CAM ---
         if uploaded_file:
             original_image = Image.open(uploaded_file).convert("RGB")
-            st.image(original_image, caption="Uploaded Image", use_container_width=True)
-            with st.spinner("Classifying..."):
+            
+            with st.spinner("Classifying and generating heatmap..."):
                 img_array = preprocess_for_classifier(original_image, IMAGE_SIZE)
+                
                 pred = model.predict(img_array)
                 confidence = np.max(pred) * 100
                 class_index = np.argmax(pred[0])
+                
+                try:
+                    # Find the last conv layer in the base model
+                    base_model = next(l for l in model.layers if l.name.startswith('efficientnet'))
+                    last_conv_layer_name = next(l.name for l in reversed(base_model.layers) if isinstance(l, layers.Conv2D))
+
+                    # Generate and overlay heatmap
+                    heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name)
+                    grad_cam_image = overlay_heatmap(original_image, heatmap)
+
+                    # Display side-by-side
+                    col1, col2 = st.columns(2)
+                    col1.image(original_image, caption="Original Uploaded Image", use_container_width=True)
+                    col2.image(grad_cam_image, caption="Grad-CAM: AI Focus Heatmap", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Could not generate Grad-CAM heatmap. Displaying original image only. Error: {e}")
+                    st.image(original_image, caption="Uploaded Image", use_container_width=True)
+
+                st.markdown("---")
                 st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
                 st.info(f"**Confidence:** `{confidence:.2f}%`")
+
                 if confidence < CONFIDENCE_THRESHOLD:
                     st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
+        # --- END OF MODIFIED LOGIC ---
 
     with tab2:
         st.header("Analyze Multiple Images")
