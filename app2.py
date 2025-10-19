@@ -7,9 +7,9 @@ import os
 import gdown
 import cv2
 
-# ==============================================================================
+# ======================================================================
 # 1. HELPER FUNCTION TO BUILD THE AUTOENCODER ARCHITECTURE
-# ==============================================================================
+# ======================================================================
 def build_autoencoder(input_shape):
     """Builds the autoencoder model architecture."""
     inputs = layers.Input(shape=input_shape)
@@ -34,9 +34,9 @@ def build_autoencoder(input_shape):
     model = models.Model(inputs, outputs)
     return model
 
-# ==============================================================================
+# ======================================================================
 # 2. MODELS CONFIGURATION
-# ==============================================================================
+# ======================================================================
 MODELS_CONFIG = {
     "ALL (EfficientNetB5)": {
         "model_type": "classifier",
@@ -121,9 +121,9 @@ MODELS_CONFIG = {
 }
 CONFIDENCE_THRESHOLD = 50.0
 
-# ==============================================================================
+# ======================================================================
 # 3. INITIAL SETUP & UI
-# ==============================================================================
+# ======================================================================
 st.set_page_config(layout="wide")
 st.title("🔬 Multi-Modal Cancer Analysis Platform")
 
@@ -148,10 +148,9 @@ selected_model_name = st.sidebar.radio("Choose the analysis model:", model_keys)
 config = MODELS_CONFIG[selected_model_name]
 IMAGE_SIZE = config["image_size"]
 
-# ==============================================================================
+# ======================================================================
 # 4. HELPER FUNCTIONS
-# ==============================================================================
-
+# ======================================================================
 @st.cache_resource(show_spinner="Loading selected model...")
 def load_model(model_name):
     cfg = MODELS_CONFIG[model_name]
@@ -168,7 +167,6 @@ def load_model(model_name):
         
     elif cfg["model_type"] == "classifier":
         base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,), name="efficientnet_base")
-        # ## This is the crucial line to fix the error ##
         base_model.trainable = False 
         
         inputs = layers.Input(shape=cfg["image_size"] + (3,))
@@ -189,43 +187,128 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
     img_array = np.array(img).astype("float32") / 255.0
     return np.expand_dims(img_array, axis=0)
 
-# ==============================================================================
-# 4.1. GRAD-CAM HELPER FUNCTIONS
-# ==============================================================================
-def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    base_model = model.get_layer('efficientnet_base')
-    grad_model = models.Model(
-        [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
-    )
+# ======================================================================
+# 4.1. UPGRADED GRAD-CAM HELPER FUNCTIONS
+# ======================================================================
+def _find_last_conv_layer(base_model):
+    """
+    Find a sensible last conv layer in base_model.
+    Preference: layers whose class name contains 'conv' and have 4D output.
+    Fallback: last layer with 4D output shape.
+    """
+    for layer in reversed(base_model.layers):
+        out_shape = getattr(layer, "output_shape", None)
+        if out_shape is None:
+            continue
+        # prefer conv-like layers
+        cls_name = layer.__class__.__name__.lower()
+        if len(out_shape) == 4 and ("conv" in cls_name or "depthwise" in cls_name):
+            return layer.name
+    # fallback: any layer with 4D output
+    for layer in reversed(base_model.layers):
+        out_shape = getattr(layer, "output_shape", None)
+        if out_shape and len(out_shape) == 4:
+            return layer.name
+    return None
+
+def get_last_conv_layer_name_from_model(model):
+    """
+    Get the last conv layer name from the wrapped model (expects base as 'efficientnet_base').
+    """
+    try:
+        base_model = model.get_layer('efficientnet_base')
+    except Exception:
+        return None
+    return _find_last_conv_layer(base_model)
+
+def make_gradcam_heatmap(img_array, model, last_conv_layer_name=None, pred_index=None):
+    """
+    Generate Grad-CAM heatmap (normalized 0..1).
+    img_array: preprocessed input with batch dim (1, H, W, C)
+    model: the full model with 'efficientnet_base' layer
+    last_conv_layer_name: optional override string
+    pred_index: optional class index to compute cam for
+    """
+    try:
+        base_model = model.get_layer('efficientnet_base')
+    except Exception as e:
+        raise RuntimeError("Could not find 'efficientnet_base' layer in model.") from e
+
+    if last_conv_layer_name is None:
+        last_conv_layer_name = _find_last_conv_layer(base_model)
+        if last_conv_layer_name is None:
+            raise RuntimeError("No suitable conv layer found in base model for Grad-CAM.")
+
+    # Build grad model
+    grad_model = models.Model([model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output])
 
     with tf.GradientTape() as tape:
-        last_conv_layer_output, preds = grad_model(img_array)
+        conv_outputs, predictions = grad_model(img_array)
         if pred_index is None:
-            pred_index = tf.argmax(preds[0])
-        class_channel = preds[:, pred_index]
+            pred_index = tf.argmax(predictions[0])
+        loss = predictions[:, pred_index]
 
-    grads = tape.gradient(class_channel, last_conv_layer_output)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    grads = tape.gradient(loss, conv_outputs)
+    # pooled gradients across spatial dims
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))  # shape (channels,)
 
-    last_conv_layer_output = last_conv_layer_output[0]
-    heatmap = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
+    conv_outputs = conv_outputs[0]  # (h, w, channels)
+    pooled_grads = pooled_grads  # (channels,)
 
-    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
-    return heatmap.numpy()
+    # weight conv outputs
+    weighted = conv_outputs * pooled_grads[tf.newaxis, tf.newaxis, :]
+    heatmap = tf.reduce_sum(weighted, axis=-1)
 
-def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
-    original_img_np = np.array(original_img.convert("RGB"))
-    heatmap_resized = cv2.resize(heatmap, (original_img_np.shape[1], original_img_np.shape[0]))
-    
-    heatmap_colored = (cv2.cvtColor(cv2.applyColorMap(np.uint8(255 * heatmap_resized), colormap), cv2.COLOR_BGR2RGB))
-    
-    superimposed_img = (heatmap_colored * (1 - alpha) + original_img_np * alpha).astype(np.uint8)
-    return Image.fromarray(superimposed_img)
+    # relu & normalize to 0..1
+    heatmap = tf.maximum(heatmap, 0)
+    max_val = tf.reduce_max(heatmap)
+    if tf.equal(max_val, 0):
+        heatmap = tf.zeros_like(heatmap)
+    else:
+        heatmap = heatmap / (max_val + 1e-8)
 
-# ==============================================================================
+    return heatmap.numpy()  # (h, w)
+
+def overlay_heatmap(original_img_pil, heatmap, alpha=0.45, colormap=cv2.COLORMAP_JET):
+    """
+    Overlay a heatmap (2D numpy array 0..1) onto a PIL image and return a PIL image.
+    """
+    if heatmap is None:
+        return original_img_pil
+
+    original_img_np = np.array(original_img_pil.convert("RGB"))
+    h_img, w_img = original_img_np.shape[0], original_img_np.shape[1]
+
+    # resize heatmap to image size
+    heatmap_resized = cv2.resize((heatmap * 255).astype(np.uint8), (w_img, h_img))
+    heatmap_colored = cv2.applyColorMap(heatmap_resized, colormap)  # BGR
+    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+
+    # blend heatmap and original
+    overlay = (original_img_np.astype(np.float32) * (1 - alpha) + heatmap_colored.astype(np.float32) * alpha)
+    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+    return Image.fromarray(overlay)
+
+# ======================================================================
+# 4.2. Anomaly (reconstruction) visualization helper
+# ======================================================================
+def make_reconstruction_error_overlay(original_img_pil, orig_array, recon_array, alpha=0.5):
+    """
+    orig_array and recon_array expected in 0..1 float format shape (H,W,3)
+    returns: PIL Image overlay highlighting per-pixel MSE.
+    """
+    error_map = np.mean((orig_array - recon_array) ** 2, axis=-1)  # (H,W)
+    # normalize
+    err_min, err_max = float(error_map.min()), float(error_map.max())
+    if err_max - err_min < 1e-8:
+        norm_err = np.zeros_like(error_map)
+    else:
+        norm_err = (error_map - err_min) / (err_max - err_min)
+    return overlay_heatmap(original_img_pil, norm_err, alpha=alpha)
+
+# ======================================================================
 # 5. MAIN APPLICATION LOGIC
-# ==============================================================================
+# ======================================================================
 model = load_model(selected_model_name)
 if model is None:
     st.stop()
@@ -251,6 +334,13 @@ if config["model_type"] == "anomaly":
             reconstructed_img = (reconstructed_array.squeeze() * 255).astype(np.uint8)
             col2.image(reconstructed_img, caption="Model's Reconstruction", use_container_width=True)
             
+            # Show reconstruction error overlay and grayscale error map
+            try:
+                recon_overlay = make_reconstruction_error_overlay(original_image, img_array.squeeze(), reconstructed_array.squeeze(), alpha=0.5)
+                st.image(recon_overlay, caption="Reconstruction Error Overlay", use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not create reconstruction error overlay: {e}")
+
             st.markdown("---")
             st.metric(label="Reconstruction Error", value=f"{error:.6f}")
             
@@ -261,7 +351,7 @@ if config["model_type"] == "anomaly":
                 st.success(f"### Verdict: Cancerous (Normal)")
                 st.write(f"The reconstruction error **({error:.4f})** is **below** the threshold of **{threshold:.4f}**. This indicates the image's features are consistent with the cancerous examples the model was trained on.")
 
-else: # Classifier Logic
+else:  # Classifier Logic
     CLASS_LABELS = config["class_labels"]
     tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
@@ -276,15 +366,37 @@ else: # Classifier Logic
                 img_array = preprocess_for_classifier(original_image, IMAGE_SIZE)
                 
                 pred = model.predict(img_array)
-                confidence = np.max(pred) * 100
-                class_index = np.argmax(pred[0])
+                confidence = np.max(pred) * 100.0
+                class_index = int(np.argmax(pred[0]))
                 
-                try:
-                    base_model = model.get_layer('efficientnet_base')
-                    last_conv_layer_name = next(l.name for l in reversed(base_model.layers) if isinstance(l, layers.Conv2D))
+                st.markdown("---")
+                st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
+                st.info(f"**Confidence:** `{confidence:.2f}%`")
+                if confidence < CONFIDENCE_THRESHOLD:
+                    st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
-                    heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name)
-                    grad_cam_image = overlay_heatmap(original_image, heatmap)
+                # Grad-CAM generation with safe detection and fallback
+                try:
+                    # Try to detect last conv layer name
+                    last_conv_layer_name = get_last_conv_layer_name_from_model(model)
+                    if last_conv_layer_name is None:
+                        st.warning("Could not auto-detect last conv layer. Attempting a safer fallback.")
+                        # Try older heuristic: search for Conv2D class in base_model
+                        try:
+                            base_model = model.get_layer('efficientnet_base')
+                            last_conv_layer_name = next(
+                                (l.name for l in reversed(base_model.layers) if 'conv' in l.__class__.__name__.lower()),
+                                None
+                            )
+                        except Exception:
+                            last_conv_layer_name = None
+
+                    if last_conv_layer_name is None:
+                        st.warning("No suitable conv layer found — Grad-CAM will be skipped.")
+                        raise RuntimeError("No conv layer found for Grad-CAM.")
+
+                    heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=class_index)
+                    grad_cam_image = overlay_heatmap(original_image, heatmap, alpha=0.45)
 
                     col1, col2 = st.columns(2)
                     col1.image(original_image, caption="Original Uploaded Image", use_container_width=True)
@@ -293,13 +405,6 @@ else: # Classifier Logic
                 except Exception as e:
                     st.error(f"Could not generate Grad-CAM heatmap. Displaying original image only. Error: {e}")
                     st.image(original_image, caption="Uploaded Image", use_container_width=True)
-
-                st.markdown("---")
-                st.success(f"**Predicted Class:** `{CLASS_LABELS[class_index]}`")
-                st.info(f"**Confidence:** `{confidence:.2f}%`")
-
-                if confidence < CONFIDENCE_THRESHOLD:
-                    st.warning("⚠️ **Low Confidence:** The result may be inaccurate.")
 
     with tab2:
         st.header("Analyze Multiple Images")
@@ -312,7 +417,7 @@ else: # Classifier Logic
                     original_image = Image.open(file).convert("RGB")
                     img_array = preprocess_for_classifier(original_image, IMAGE_SIZE)
                     pred = model.predict(img_array)
-                    confidence = np.max(pred) * 100
-                    class_index = np.argmax(pred[0])
+                    confidence = np.max(pred) * 100.0
+                    class_index = int(np.argmax(pred[0]))
                     caption = f"{CLASS_LABELS[class_index]} ({confidence:.1f}%)"
                     st.image(original_image, caption=caption, use_container_width=True)
