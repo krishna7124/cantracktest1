@@ -170,9 +170,9 @@ def load_model(model_name):
         return model
         
     elif cfg["model_type"] == "classifier":
-        # Note: A name is explicitly given to the base_model for easier access later
         base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,), name="efficientnet_base")
-        inputs = layers.Input(shape=cfg["image_size"] + (3,), name="input_layer")
+        # ## KEY FIX ##: Removed the conflicting 'name' argument from the Input layer
+        inputs = layers.Input(shape=cfg["image_size"] + (3,))
         x = base_model(inputs, training=False)
         x = layers.GlobalAveragePooling2D()(x)
         outputs = layers.Dense(len(cfg["class_labels"]), activation="softmax")(x)
@@ -197,16 +197,11 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
 # ==============================================================================
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
     """Generates the Grad-CAM heatmap."""
-    # The Grad-CAM model takes the input image and outputs the activations of the
-    # last conv layer AND the final predictions.
-    # ## KEY FIX ##: We get the specific conv layer's output from the *base model*
     base_model = model.get_layer('efficientnet_base')
     grad_model = models.Model(
         [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
     )
 
-    # Compute the gradient of the top predicted class with respect to the
-    # activations of the last conv layer
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
         if pred_index is None:
@@ -220,8 +215,7 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
     heatmap = last_conv_layer_output @ pooled_grads[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
 
-    # Normalize the heatmap
-    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8) # Add epsilon
+    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
     return heatmap.numpy()
 
 def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
