@@ -110,7 +110,6 @@ MODELS_CONFIG = {
         "class_labels": ['oral_cancer', 'oral_normal'],
         "image_size": (380, 380)
     },
-    # --- 10th MODEL: ANOMALY DETECTOR ---
     "Bone Cancer (Anomaly Detector)": {
         "model_type": "anomaly",
         "model_builder": build_autoencoder,
@@ -130,7 +129,6 @@ st.title("🔬 Multi-Modal Cancer Analysis Platform")
 
 @st.cache_resource(show_spinner="Performing initial setup: Downloading required models...")
 def download_all_models():
-    """Downloads any missing model files specified in the config."""
     for model_name, config in MODELS_CONFIG.items():
         if config.get("file_id"):
             weights_file = config.get("weights_file")
@@ -156,7 +154,6 @@ IMAGE_SIZE = config["image_size"]
 
 @st.cache_resource(show_spinner="Loading selected model...")
 def load_model(model_name):
-    """Builds a model based on its config and loads its weights."""
     cfg = MODELS_CONFIG[model_name]
     
     weights_file = cfg.get("weights_file")
@@ -171,7 +168,9 @@ def load_model(model_name):
         
     elif cfg["model_type"] == "classifier":
         base_model = cfg["model_builder"](include_top=False, weights=None, input_shape=cfg["image_size"] + (3,), name="efficientnet_base")
-        # ## KEY FIX ##: Removed the conflicting 'name' argument from the Input layer
+        # ## KEY FIX ##: Freezing the base model simplifies the graph for Grad-CAM
+        base_model.trainable = False 
+        
         inputs = layers.Input(shape=cfg["image_size"] + (3,))
         x = base_model(inputs, training=False)
         x = layers.GlobalAveragePooling2D()(x)
@@ -181,13 +180,11 @@ def load_model(model_name):
         return model
 
 def preprocess_for_classifier(img: Image.Image, image_size: tuple):
-    """Preprocesses an image for EfficientNet classifiers."""
     img = img.convert("RGB").resize(image_size)
     img_array = np.array(img).astype("float32")
     return tf.keras.applications.efficientnet.preprocess_input(np.expand_dims(img_array, axis=0))
 
 def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
-    """Preprocesses an image for the autoencoder anomaly detector."""
     img = img.convert("RGB").resize(image_size)
     img_array = np.array(img).astype("float32") / 255.0
     return np.expand_dims(img_array, axis=0)
@@ -196,7 +193,6 @@ def preprocess_for_anomaly(img: Image.Image, image_size: tuple):
 # 4.1. GRAD-CAM HELPER FUNCTIONS
 # ==============================================================================
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    """Generates the Grad-CAM heatmap."""
     base_model = model.get_layer('efficientnet_base')
     grad_model = models.Model(
         [model.inputs], [base_model.get_layer(last_conv_layer_name).output, model.output]
@@ -219,7 +215,6 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
     return heatmap.numpy()
 
 def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
-    """Overlays a heatmap onto the original image."""
     original_img_np = np.array(original_img.convert("RGB"))
     heatmap_resized = cv2.resize(heatmap, (original_img_np.shape[1], original_img_np.shape[0]))
     
@@ -237,7 +232,6 @@ if model is None:
 
 st.header(f"Analysis using: **{selected_model_name}**")
 
-# --- ANOMALY DETECTOR LOGIC ---
 if config["model_type"] == "anomaly":
     st.info("This model was trained only on **cancerous** images. It flags images that look **different** from its training data as anomalies.")
     uploaded_file = st.file_uploader("Upload a bone scan image", type=["jpg", "jpeg", "png"], key="anomaly_uploader")
@@ -267,8 +261,7 @@ if config["model_type"] == "anomaly":
                 st.success(f"### Verdict: Cancerous (Normal)")
                 st.write(f"The reconstruction error **({error:.4f})** is **below** the threshold of **{threshold:.4f}**. This indicates the image's features are consistent with the cancerous examples the model was trained on.")
 
-# --- CLASSIFIER LOGIC ---
-else:
+else: # Classifier Logic
     CLASS_LABELS = config["class_labels"]
     tab1, tab2 = st.tabs(["Single Image Analysis", "Batch Image Analysis"])
 
@@ -287,15 +280,12 @@ else:
                 class_index = np.argmax(pred[0])
                 
                 try:
-                    # Find the base model and the name of its last conv layer
                     base_model = model.get_layer('efficientnet_base')
                     last_conv_layer_name = next(l.name for l in reversed(base_model.layers) if isinstance(l, layers.Conv2D))
 
-                    # Generate and overlay heatmap
                     heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name)
                     grad_cam_image = overlay_heatmap(original_image, heatmap)
 
-                    # Display side-by-side
                     col1, col2 = st.columns(2)
                     col1.image(original_image, caption="Original Uploaded Image", use_container_width=True)
                     col2.image(grad_cam_image, caption="Grad-CAM: AI Focus Heatmap", use_container_width=True)
